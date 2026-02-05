@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+nul
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Cache
+.cache/
+.eslintcache
+.parcel-cache/
+
+# Package lock (optional - npm uses package-lock.json)
+package-lock.json
+
+# Old/unused jsx files (keep only json-card-builder.jsx as main)
+ascii-to-card.jsx
+ascii-to-card-simple.jsx
+ascii-to-card-v3.jsx
+ascii-to-card-final.jsx
+ascii-to-card-editor.jsx
+ems-cost-card.jsx
+card-parser-tests.js
