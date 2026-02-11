@@ -252,12 +252,76 @@ function parseHierarchyDiagram(text) {
   return result;
 }
 
+// ==================== 테이블 다이어그램 파서 ====================
+function parseTableDiagram(text) {
+  const lines = text.split('\n').filter(l => l.trim());
+  const result = { title: '', nodes: [] };
+
+  // ┬가 있는 첫 줄(헤더 테두리)에서 컬럼 구분 위치 파악
+  const headerLine = lines.find(l => l.includes('┬'));
+  if (!headerLine) return null;
+
+  const separators = [];
+  for (let i = 0; i < headerLine.length; i++) {
+    if (headerLine[i] === '┌' || headerLine[i] === '├') separators.push(i);
+    else if (headerLine[i] === '┬' || headerLine[i] === '┼') separators.push(i);
+  }
+  // 마지막 ┐ 또는 ┤ 위치 추가
+  for (let i = headerLine.length - 1; i >= 0; i--) {
+    if (headerLine[i] === '┐' || headerLine[i] === '┤') { separators.push(i); break; }
+  }
+
+  if (separators.length < 3) return null; // 최소 2컬럼
+
+  // 데이터 줄 추출 (│ 내용 │ 형태, 구조선만 있는 줄 제외)
+  const dataLines = lines.filter(l => {
+    const t = l.trim();
+    return t.startsWith('│') && !t.match(/^[│┼┬┴─┌┐└┘├┤\s]+$/);
+  });
+
+  if (dataLines.length === 0) return null;
+
+  // 각 줄을 컬럼 위치 기준으로 분리
+  const rows = dataLines.map(line => {
+    const cells = [];
+    for (let i = 0; i < separators.length - 1; i++) {
+      const start = separators[i] + 1;
+      const end = separators[i + 1];
+      const cell = (end <= line.length ? line.substring(start, end) : line.substring(start)).replace(/│/g, '').trim();
+      cells.push(cell);
+    }
+    return cells;
+  });
+
+  // ├───┼───┤ 줄이 있으면 헤더 구분선 있음
+  const hasHeaderSep = lines.some(l => l.includes('┼'));
+
+  const headers = rows[0] || [];
+  const body = rows.slice(1);
+
+  result.title = headers.join(' / ');
+  result.nodes.push({
+    type: 'table',
+    headers,
+    rows: body,
+    hasHeaderSep
+  });
+
+  return result;
+}
+
 // ==================== 통합 ASCII 파서 (v12 - 10/10 테스트 통과) ====================
 function parseAsciiToJson(text) {
   const lines = text.split('\n');
   const result = { title: '', nodes: [] };
   if (!text.trim()) return result;
   if (/[└├]─/.test(text) && !/^┌/.test(text.trim())) return parseTree(text);
+
+  // 테이블 감지 (┬ 또는 ┴가 있으면 멀티컬럼 테이블)
+  if (/[┬┴]/.test(text)) {
+    const tableResult = parseTableDiagram(text);
+    if (tableResult && tableResult.nodes.length > 0) return tableResult;
+  }
 
   // 시퀀스 다이어그램 감지 (│──> 또는 │<── 패턴 + 박스 없음)
   const hasSequenceArrows = /│[─]+.*>│|│<[─]+.*│/.test(text);
@@ -574,6 +638,12 @@ function parseTree(text) {
 
 // ==================== 샘플 데이터 ====================
 const asciiSamples = {
+  table: `┌──────────────┬──────────────┬──────────────────┐
+│  ASCII (1fr)  │  JSON (1fr)  │  Card (1.3fr)    │
+│  D2Coding     │  JetBrains   │  테마별 배경      │
+│  편집 가능    │  편집 가능    │  실시간 미리보기  │
+└──────────────┴──────────────┴──────────────────┘`,
+
   timeline: `┌─────────────────────────────────────────────────────┐
 │  월별 상계 흐름                                     │
 ├─────────────────────────────────────────────────────┤
@@ -947,6 +1017,30 @@ function NodeRenderer({ node, theme = 'dark' }) {
         </div>
       );
     
+    case 'table':
+      const tblHeaders = node.headers || [];
+      const tblRows = node.rows || [];
+      return (
+        <div style={{ marginBottom: 12, borderRadius: 8, overflow: 'hidden', border: `1px solid ${t.border}` }}>
+          <div style={{ display: 'flex', background: colors.blue.bg, borderBottom: `2px solid ${colors.blue.border}` }}>
+            {tblHeaders.map((h, i) => (
+              <div key={i} style={{ flex: 1, padding: '10px 14px', fontSize: 12, fontWeight: 600, color: colors.blue.text, borderRight: i < tblHeaders.length - 1 ? `1px solid ${colors.blue.border}` : 'none' }}>
+                {h}
+              </div>
+            ))}
+          </div>
+          {tblRows.map((row, i) => (
+            <div key={i} style={{ display: 'flex', borderBottom: i < tblRows.length - 1 ? `1px solid ${t.border}` : 'none', background: i % 2 === 0 ? 'transparent' : t.itemBg }}>
+              {row.map((cell, j) => (
+                <div key={j} style={{ flex: 1, padding: '8px 14px', fontSize: 12, color: t.text, borderRight: j < row.length - 1 ? `1px solid ${t.border}` : 'none' }}>
+                  {cell}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      );
+
     case 'kv':
       return (
         <div style={{ marginBottom: 12 }}>
