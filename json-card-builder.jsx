@@ -310,11 +310,110 @@ function parseTableDiagram(text) {
   return result;
 }
 
+// ==================== 메모리 맵 파서 ====================
+function parseMemoryMap(text) {
+  const lines = text.split('\n');
+  const result = { title: '', nodes: [] };
+
+  // 타이틀: ┌ 이전 줄
+  let titleLine = '';
+  let boxStartIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim().startsWith('┌')) { boxStartIdx = i; break; }
+    const trimmed = lines[i].trim();
+    if (trimmed) titleLine = trimmed;
+  }
+  result.title = titleLine || 'Memory Map';
+
+  const regions = [];
+  let currentRegion = null;
+
+  for (let i = boxStartIdx; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // 경계선: ┌──┐, ├──┤, └──┘
+    const isBorderLine = /^[┌├└][─]+[┐┤┘]/.test(trimmed);
+    if (isBorderLine) {
+      const addrMatch = line.match(/0x[0-9A-Fa-f_]+/);
+      const address = addrMatch ? addrMatch[0] : '';
+
+      if (currentRegion) {
+        currentRegion.endAddress = address;
+        regions.push(currentRegion);
+        currentRegion = null;
+      }
+
+      if (trimmed.startsWith('┌') || trimmed.startsWith('├')) {
+        currentRegion = { name: '', size: '', startAddress: address, endAddress: '', annotation: '', details: [] };
+      }
+      continue;
+    }
+
+    // 내용줄: │ ... │
+    if (trimmed.startsWith('│') && currentRegion) {
+      const contentMatch = line.match(/│(.+?)│\s*(.*)/);
+      if (!contentMatch) continue;
+
+      let inner = contentMatch[1].trim();
+      const after = contentMatch[2].trim();
+
+      const arrowMatch = after.match(/←\s*(.+)/);
+      if (arrowMatch && !currentRegion.annotation) {
+        currentRegion.annotation = arrowMatch[1].trim();
+      }
+
+      if (!inner) continue;
+
+      if (!currentRegion.name) {
+        const nameSize = inner.match(/^(.+?)\s*\((\d+\s*KB)\)/);
+        if (nameSize) {
+          currentRegion.name = nameSize[1].trim();
+          currentRegion.size = nameSize[2].trim();
+        } else {
+          currentRegion.name = inner;
+        }
+      } else if (inner.startsWith('-')) {
+        currentRegion.details.push(inner.replace(/^-\s*/, '').trim());
+      } else if (inner.startsWith('(') || inner.endsWith(')') || inner.includes('/')) {
+        currentRegion.name += ' ' + inner;
+      } else {
+        currentRegion.details.push(inner);
+      }
+    }
+  }
+
+  if (regions.length > 0) {
+    const titleSizeMatch = titleLine.match(/(\d+\s*[KMG]B)/i);
+    const titleRangeMatch = titleLine.match(/(0x[0-9A-Fa-f_]+)\s*~\s*(0x[0-9A-Fa-f_]+)/);
+
+    result.nodes.push({
+      type: 'memoryMap',
+      totalSize: titleSizeMatch ? titleSizeMatch[1] : '',
+      startAddress: titleRangeMatch ? titleRangeMatch[1] : '',
+      endAddress: titleRangeMatch ? titleRangeMatch[2] : '',
+      regions
+    });
+  }
+
+  return result;
+}
+
 // ==================== 통합 ASCII 파서 (v12 - 10/10 테스트 통과) ====================
 function parseAsciiToJson(text) {
   const lines = text.split('\n');
   const result = { title: '', nodes: [] };
   if (!text.trim()) return result;
+
+  // 메모리 맵 감지 (tree보다 먼저 - 단일 박스 + ├ 구분선에 16진수 주소)
+  const hasHexAddresses = /0x[0-9A-Fa-f_]+/.test(text);
+  const hasSingleBoxWithSeps = /┌/.test(text) && /├/.test(text) && /└/.test(text);
+  const hasAddressOnBorder = lines.some(line => /[┌├└]/.test(line) && /0x[0-9A-Fa-f_]+/.test(line));
+  if (hasHexAddresses && hasSingleBoxWithSeps && hasAddressOnBorder) {
+    const memoryMapResult = parseMemoryMap(text);
+    if (memoryMapResult && memoryMapResult.nodes.length > 0) return memoryMapResult;
+  }
+
   if (/[└├]─/.test(text) && !/^┌/.test(text.trim())) return parseTree(text);
 
   // 테이블 감지 (┬ 또는 ┴가 있으면 멀티컬럼 테이블)
@@ -793,7 +892,24 @@ const asciiSamples = {
 │ │ Module 3  │ │   │ │ Module 3  │ │             │ │ Module 3  │ │
 │ │ Cell 1~24 │ │   │ │ Cell 1~24 │ │             │ │ Cell 1~24 │ │
 │ └───────────┘ │   │ └───────────┘ │             │ └───────────┘ │
-└───────────────┘   └───────────────┘             └───────────────┘`
+└───────────────┘   └───────────────┘             └───────────────┘`,
+
+  memoryMap: `Flash 512KB (0x0800_0000 ~ 0x0807_FFFF)
+┌─────────────────────┐ 0x0800_0000
+│  Bootloader (32KB)  │ ← CAN IAP 부트로더 (고정, SWD로 1회만)
+│  - CAN 드라이버     │
+│  - Flash 프로그래밍 │
+│  - 무결성 검증      │
+├─────────────────────┤ 0x0800_8000
+│  App Header (2KB)   │ ← 버전, CRC, 크기, Node ID
+├─────────────────────┤ 0x0800_8800
+│  Application        │ ← 노드별 펌웨어 (최대 ~478KB)
+│  (motor/actuator/   │
+│   loadcell/sensor)  │
+│                     │
+├─────────────────────┤ 0x0807_F800
+│  Config (2KB)       │ ← Node ID, 캘리브레이션 등 (Flash 마지막 페이지)
+└─────────────────────┘ 0x0807_FFFF`
 };
 
 // ==================== 테마 시스템 ====================
@@ -1264,6 +1380,50 @@ function NodeRenderer({ node, theme = 'dark' }) {
           )}
         </div>
       );
+
+    case 'memoryMap': {
+      const regionColorNames = ['blue', 'green', 'orange', 'purple', 'cyan', 'teal'];
+      const mapRegions = node.regions || [];
+      return (
+        <div style={{ marginBottom: 16 }}>
+          {node.totalSize && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 12px', marginBottom: 8, background: colors.gray.bg, border: `1px solid ${colors.gray.border}`, borderRadius: 6, fontSize: 11, color: colors.gray.text, fontFamily: 'monospace' }}>
+              <span>Total: {node.totalSize}</span>
+              <span>{node.startAddress} ~ {node.endAddress}</span>
+            </div>
+          )}
+          <div style={{ border: `2px solid ${t.border}`, borderRadius: 10, overflow: 'hidden' }}>
+            {mapRegions.map((region, i) => {
+              const rc = colors[regionColorNames[i % regionColorNames.length]];
+              return (
+                <div key={i} style={{ borderBottom: i < mapRegions.length - 1 ? `2px solid ${t.border}` : 'none', display: 'flex' }}>
+                  <div style={{ width: 110, padding: '8px', borderRight: `1px solid ${t.border}`, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', fontFamily: 'monospace', fontSize: 9, color: t.subText, background: 'rgba(0,0,0,0.15)', flexShrink: 0 }}>
+                    <span>{region.startAddress}</span>
+                    {region.endAddress && region.endAddress !== region.startAddress && (
+                      <span style={{ opacity: 0.6 }}>{region.endAddress}</span>
+                    )}
+                  </div>
+                  <div style={{ flex: 1, padding: '10px 14px', background: rc.bg, minHeight: region.details.length > 0 ? 60 : 36 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: region.annotation || region.details.length > 0 ? 6 : 0 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: rc.text }}>{region.name}</span>
+                      {region.size && (
+                        <span style={{ fontSize: 10, padding: '1px 6px', background: `${rc.accent}30`, borderRadius: 4, color: rc.accent, fontWeight: 600 }}>{region.size}</span>
+                      )}
+                    </div>
+                    {region.annotation && (
+                      <div style={{ fontSize: 10, color: t.subText, marginBottom: region.details.length > 0 ? 6 : 0, fontStyle: 'italic' }}>{region.annotation}</div>
+                    )}
+                    {region.details.map((detail, j) => (
+                      <div key={j} style={{ fontSize: 10, color: t.text, paddingLeft: 8, borderLeft: `2px solid ${rc.border}`, marginBottom: 3 }}>{detail}</div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
 
     case 'tree':
       return (
